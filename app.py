@@ -16,8 +16,18 @@ SKIP_PATTERNS   = ["?page=", "&page=", "/cdn-cgi/"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; LinkChecker/1.0)"}
 
 st.set_page_config(page_title="Link Checker", page_icon="🔗", layout="wide")
-st.title("🔗 Website Link Checker")
-st.caption("Vul een website URL in en klik op Start om alle broken links te vinden.")
+
+# ── Header ──
+st.markdown("""
+    <h1 style='margin-bottom:0'>🔗 Website Link Checker</h1>
+    <p style='color:#888;font-size:16px;margin-top:8px'>
+        Enter your website URL below and hit <b>Start Scan</b>. This tool automatically crawls 
+        every page on your website and identifies broken links — pages that return a 
+        <b>404 Page Not Found</b> or other errors. When the scan is complete, you'll see a full 
+        list of broken pages and which page they were found on, ready to download as a CSV.
+    </p>
+    <hr style='margin:20px 0;border-color:#333'>
+""", unsafe_allow_html=True)
 
 def normalize(url):
     p = urlparse(url)
@@ -58,17 +68,13 @@ def fetch(url, domain):
     except requests.exceptions.Timeout:         return None, url, None, "Timeout"
     except Exception as e:                       return None, url, None, str(e)
 
-def crawl(start_url, max_links, delay, status_placeholder, metrics_placeholder, stop_placeholder):
+def crawl(start_url, max_links, delay, status_ph, metrics_ph):
     domain  = urlparse(start_url).netloc
     visited = set()
     queue   = [(start_url, start_url)]
     results = []
 
-    while queue:
-        # Check stop button via session state
-        if st.session_state.get("stop_crawl", False):
-            break
-
+    while queue and not st.session_state.get("stop_crawl", False):
         url, source = queue.pop(0)
         url = normalize(url)
 
@@ -77,7 +83,6 @@ def crawl(start_url, max_links, delay, status_placeholder, metrics_placeholder, 
         visited.add(url)
 
         status, final_url, html, error = fetch(url, domain)
-
         results.append({
             "source_page": source, "url": url, "status": status,
             "final_url": final_url if final_url != url else "",
@@ -89,15 +94,17 @@ def crawl(start_url, max_links, delay, status_placeholder, metrics_placeholder, 
                 if link not in visited:
                     queue.append((link, url))
 
-        # Update UI elke 5 links
         if len(visited) % 5 == 0 or not queue:
-            broken = sum(1 for r in results if r["status"] in BROKEN_CODES)
-            status_placeholder.markdown(f"⏳ **{len(visited)}** gecheckt — ❌ **{broken}** broken — 📋 **{len(queue)}** in wachtrij")
-            with metrics_placeholder.container():
+            checked = len(visited)
+            broken  = sum(1 for r in results if r["status"] in BROKEN_CODES)
+            queued  = len(queue)
+            pct     = int(checked / max(checked + queued, 1) * 100)
+            status_ph.progress(pct, text=f"⏳ {checked} pages scanned — ❌ {broken} broken — {queued} remaining")
+            with metrics_ph.container():
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Gecheckt", len(visited))
-                c2.metric("Broken",   broken)
-                c3.metric("Wachtrij", len(queue))
+                c1.metric("Pages Scanned", checked)
+                c2.metric("Broken Links",  broken)
+                c3.metric("Queue",         queued)
 
         time.sleep(delay)
 
@@ -105,51 +112,56 @@ def crawl(start_url, max_links, delay, status_placeholder, metrics_placeholder, 
 
 # ── Sidebar ──
 with st.sidebar:
-    st.header("⚙️ Instellingen")
-    max_links = st.slider("Max links", 100, 10000, 5000, 100)
-    delay     = st.slider("Delay (s)", 0.0, 1.0, 0.1, 0.05)
+    st.header("⚙️ Settings")
+    max_links = st.slider("Max pages to scan", 100, 10000, 5000, 100)
+    delay     = st.slider("Delay per request (s)", 0.0, 1.0, 0.1, 0.05)
     st.divider()
-    st.caption("🔴 404 / 410 = pagina bestaat niet")
-    st.caption("🔴 500 / 502 / 503 = serverfout")
+    st.markdown("**Status codes flagged as broken:**")
+    st.caption("🔴 404 — Page not found")
+    st.caption("🔴 410 — Page permanently gone")
+    st.caption("🔴 500 / 502 / 503 — Server error")
 
-# ── Main UI ──
-col1, col2 = st.columns([4, 1])
+# ── Input ──
+col1, col2, col3 = st.columns([5, 1, 1])
 with col1:
-    url_input = st.text_input("Website URL", placeholder="https://www.jouwwebsite.nl/", label_visibility="collapsed")
+    url_input = st.text_input("URL", placeholder="https://www.yourwebsite.com/", label_visibility="collapsed")
 with col2:
-    start = st.button("▶ Start", type="primary", use_container_width=True)
+    start = st.button("▶ Start Scan", type="primary", use_container_width=True)
+with col3:
+    if st.button("⏹ Stop", use_container_width=True):
+        st.session_state.stop_crawl = True
 
-if st.button("⏹ Stop"):
-    st.session_state.stop_crawl = True
+status_ph  = st.empty()
+metrics_ph = st.empty()
 
-status_placeholder  = st.empty()
-metrics_placeholder = st.empty()
-stop_placeholder    = st.empty()
-
+# ── Run ──
 if start and url_input:
     st.session_state.stop_crawl = False
-    results = crawl(url_input, max_links, delay, status_placeholder, metrics_placeholder, stop_placeholder)
+    results = crawl(url_input, max_links, delay, status_ph, metrics_ph)
 
-    broken = [r for r in results if r["status"] in BROKEN_CODES]
+    broken  = [r for r in results if r["status"] in BROKEN_CODES]
     checked = len(results)
 
-    status_placeholder.markdown(f"✅ **Klaar!** {checked} gecheckt — ❌ {len(broken)} broken links gevonden")
-
     if broken:
+        status_ph.progress(100, text=f"✅ Scan complete — {checked} pages scanned — ❌ {len(broken)} broken links found")
         st.divider()
-        st.subheader(f"❌ {len(broken)} Broken links")
+
+        st.markdown(f"### ❌ {len(broken)} Broken Links Found")
+        st.caption("The table below shows every broken link and the page it was found on. Download the CSV to share or action the results.")
+
         df = pd.DataFrame(broken)[["source_page", "url", "status", "error"]]
-        df.columns = ["Gevonden op", "Broken URL", "Status", "Error"]
+        df.columns = ["Found on page", "Broken URL", "Status code", "Error"]
         st.dataframe(df, use_container_width=True, height=400)
 
         buf = io.StringIO()
         df.to_csv(buf, index=False)
         st.download_button(
-            label=f"⬇ Download {len(broken)} broken links (CSV)",
+            label=f"⬇️ Download {len(broken)} broken links as CSV",
             data=buf.getvalue().encode(),
-            file_name=f"broken_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            file_name=f"broken_links_{urlparse(url_input).netloc}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv",
             type="primary",
         )
     else:
-        st.success("🎉 Geen broken links gevonden!")
+        status_ph.progress(100, text=f"✅ Scan complete — {checked} pages scanned")
+        st.success("🎉 No broken links found — your website is looking good!")
